@@ -1,0 +1,27 @@
+{
+  "name": "mednet-tracker",
+  "version": "1.0.0",
+  "description": "Учёт и картографирование сетевой инфраструктуры больницы",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "seed": "node scripts/seed.js",
+    "reset": "node scripts/reset.js",
+    "check": "node scripts/check.js",
+    "backup": "node scripts/backup.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.5"
+  }
+}

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>MedNet Tracker</title>
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230e1418'/><g stroke='%232ec4c6' stroke-width='2.5' fill='none'><path d='M16 6v7M16 19v7M8 16h16'/><circle cx='16' cy='16' r='3'/></g></svg>">
+
+  <!--
+    Сборщик не используется: модули грузятся браузером напрямую.
+    Карта импортов подменяет «голые» имена пакетов на локальные файлы,
+    поэтому приложению не нужен ни доступ в интернет, ни CDN.
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "vue": "/vendor/vue.js",
+      "vue-router": "/vendor/vue-router.js",
+      "pinia": "/vendor/pinia.js",
+      "@vue/devtools-api": "/vendor/devtools-api-stub.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div class="boot">
+      <div class="boot__mark"></div>
+      <div class="boot__text">Загрузка</div>
+    </div>
+  </div>
+  <script type="module" src="/js/main.js"></script>
+  <noscript>
+    <p style="padding:2rem;font-family:sans-serif">
+      Для работы приложения нужен включённый JavaScript.
+    </p>
+  </noscript>
+</body>
+</html>

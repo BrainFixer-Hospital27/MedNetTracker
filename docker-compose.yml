@@ -1,0 +1,57 @@
+# =====================================================================
+#  MedNet Tracker — развёртывание
+#
+#  По умолчанию приложение доступно ТОЛЬКО через WireGuard: порт
+#  привязан к адресу VPN-интерфейса, наружу не смотрит. Это осознанное
+#  умолчание — в базе лежат MAC-адреса, планы этажей и пароли от
+#  сетевого оборудования.
+#
+#  Как открыть доступ через домен — см. docs/DEPLOY.md.
+# =====================================================================
+
+services:
+  mednet:
+    build:
+      context: .
+      args:
+        TZ: ${TZ:-Europe/Moscow}
+    image: mednet-tracker:latest
+    container_name: mednet
+    restart: unless-stopped
+
+    # Привязка к адресу WireGuard. Замените на свой адрес в туннеле
+    # (обычно 10.x.x.1). Так порт не появится на публичном интерфейсе,
+    # даже если в брандмауэре что-то не так настроено.
+    ports:
+      - "${BIND_ADDRESS:-10.13.13.1}:${PUBLIC_PORT:-3000}:3000"
+
+    environment:
+      TZ: ${TZ:-Europe/Moscow}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?задайте ADMIN_PASSWORD в файле .env}
+      SESSION_SECRET: ${SESSION_SECRET:?задайте SESSION_SECRET в файле .env}
+      SESSION_HOURS: ${SESSION_HOURS:-12}
+      # За обратным прокси по https поставьте 1
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+      # 0 — прямое подключение, 1 — за nginx, 2 — за связкой Cloudflare и nginx
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+      # За Cloudflare: cf-connecting-ip
+      REAL_IP_HEADER: ${REAL_IP_HEADER:-}
+
+    volumes:
+      # Всё состояние приложения — в одном месте. Достаточно
+      # копировать этот каталог, чтобы иметь полную резервную копию.
+      - ./data:/app/data
+
+    # Скромные пределы: приложению хватает 80–120 МБ, а на сервере
+    # с гигабайтом памяти важно, чтобы сосед не остался без ресурсов
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
