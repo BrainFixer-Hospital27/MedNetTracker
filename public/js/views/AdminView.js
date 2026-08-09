@@ -160,6 +160,10 @@ export const AdminView = {
           <span class="pager__info" v-if="bindings">
             фигур в файле: {{ bindings.total_in_svg }}
           </span>
+          <div style="flex:1"></div>
+          <button class="btn btn--sm" :disabled="!selectedFloorId" @click="resetPositions">
+            <Icon name="refresh" :size="13" /> Разместить заново
+          </button>
         </div>
 
         <div class="split">
@@ -182,6 +186,17 @@ export const AdminView = {
             <div v-if="uploadState" class="note" style="margin-top:12px"
                  :class="uploadState.kind === 'error' ? 'note--danger' : 'note--ok'">
               {{ uploadState.message }}
+            </div>
+            <div v-if="uploadWarning" class="note note--warn" style="margin-top:10px">
+              <Icon name="warning" :size="13" style="vertical-align:-2px" />
+              {{ uploadWarning }}
+            </div>
+
+            <div v-if="bindings?.id_hint" class="note" style="margin-top:12px">
+              Идентификаторы фигур для этого этажа:
+              <span class="mono">{{ bindings.id_hint }}</span> для кабинета,
+              <span class="mono">{{ bindings.id_hint_corridor }}</span> для коридора.
+              Короткая форма <span class="mono">room-214</span> тоже принимается.
             </div>
           </div>
 
@@ -492,6 +507,7 @@ export const AdminView = {
     const editor = ref(null);
     const dragOver = ref(false);
     const uploadState = ref(null);
+    const uploadWarning = ref(null);
     const bindings = ref(null);
     const selectedFloorId = ref(null);
     const pw = ref({ current: '', next: '', repeat: '' });
@@ -611,6 +627,7 @@ export const AdminView = {
         return;
       }
       uploadState.value = null;
+      uploadWarning.value = null;
       try {
         const text = await file.text();
         const prepared = prepareSvg(text);
@@ -619,6 +636,7 @@ export const AdminView = {
         });
 
         bindings.value = report;
+        uploadWarning.value = report.warning || null;
         uploadState.value = {
           kind: 'ok',
           message: `План принят. Фигур: ${report.total_in_svg}, ` +
@@ -636,6 +654,21 @@ export const AdminView = {
         stats.value = await mapApi.stats();
       } catch (err) {
         uploadState.value = { kind: 'error', message: err.message };
+      }
+    }
+
+    /** Заново разложить оборудование по кабинетам этажа. */
+    async function resetPositions() {
+      if (!window.confirm(
+        'Сбросить расстановку оборудования на этом этаже? ' +
+        'Иконки разложатся по кабинетам заново при следующем открытии карты.'
+      )) return;
+      try {
+        const result = await structureApi.resetPositions(selectedFloorId.value);
+        toasts.ok(`Сброшено: ${result.devices} устройств, ${result.sockets} розеток`);
+        if (mapStore.floorId === selectedFloorId.value) await mapStore.refresh();
+      } catch (err) {
+        toasts.error(err.message);
       }
     }
 
@@ -887,6 +920,7 @@ export const AdminView = {
     return {
       meta, tab, stats, switches, editor, dragOver, uploadState, bindings,
       selectedFloorId, pw, integrity, showIntegrity, repairIntegrity,
+      uploadWarning, resetPositions,
       scope, scopeFloors, reportGroups, workbookUrl, summaryUrl, csvUrl,
       snapshotCount, previewData, resetScope, preview, takeSnapshot,
       loadBindings, onDrop, onFilePicked, bindManual, createFromSvg,

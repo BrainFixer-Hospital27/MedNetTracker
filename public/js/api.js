@@ -102,6 +102,7 @@ export const structureApi = {
   bind:        (id, polygonId, roomId) =>
     api.post(`/api/floors/${id}/bindings`, { svg_polygon_id: polygonId, room_id: roomId }),
   createRoomsFromSvg: (id, items) => api.post(`/api/floors/${id}/rooms-from-svg`, { items }),
+  resetPositions: (id) => api.post(`/api/floors/${id}/reset-positions`),
 
   departments: () => api.get('/api/departments'),
   createDepartment: (data) => api.post('/api/departments', data),

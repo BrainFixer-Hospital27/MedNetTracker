@@ -222,6 +222,36 @@ router.get('/floors/:id/bindings', (req, res) => {
   });
 });
 
+/**
+ * Сброс расстановки оборудования на этаже.
+ *
+ * Координаты иконок отсчитываются от плана. Если план перерисовали в
+ * другом масштабе или сместили, прежние координаты указывают не туда -
+ * оборудование окажется в углу или за пределами помещений. Обнуляем их,
+ * и при следующем открытии карты приложение разложит всё заново по
+ * фактическим границам кабинетов.
+ */
+router.post('/floors/:id/reset-positions', (req, res) => {
+  const floor = db.prepare('SELECT * FROM floors WHERE id = ?').get(req.params.id);
+  if (!floor) return notFound(res, 'Этаж');
+
+  const result = db.transaction(() => {
+    const devices = db.prepare(`
+      UPDATE devices SET pos_x = NULL, pos_y = NULL
+      WHERE room_id IN (SELECT id FROM rooms WHERE floor_id = ?)
+    `).run(floor.id).changes;
+    const sockets = db.prepare(`
+      UPDATE sockets SET pos_x = NULL, pos_y = NULL
+      WHERE room_id IN (SELECT id FROM rooms WHERE floor_id = ?)
+    `).run(floor.id).changes;
+    return { devices, sockets };
+  })();
+
+  logChange(req, 'floor', floor.id, 'update',
+    `сброшена расстановка: ${result.devices} устройств, ${result.sockets} розеток`);
+  res.json(result);
+});
+
 /** Ручная привязка одного полигона к помещению. */
 router.post('/floors/:id/bindings', (req, res) => {
   const floor = db.prepare('SELECT * FROM floors WHERE id = ?').get(req.params.id);
