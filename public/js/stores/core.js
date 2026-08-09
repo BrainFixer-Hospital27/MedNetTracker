@@ -53,12 +53,16 @@ export const useMetaStore = defineStore('meta', () => {
 
   const buildings = ref([]);
   const departments = ref([]);
+  // Все помещения организации, а не только текущего этажа: нужны, чтобы
+  // оборудование можно было перевести в другой корпус
+  const allRooms = ref([]);
   const loaded = ref(false);
 
   async function load(force = false) {
     if (loaded.value && !force) return;
-    const [meta, structure, depts] = await Promise.all([
+    const [meta, structure, depts, rooms] = await Promise.all([
       mapApi.meta(), structureApi.buildings(), structureApi.departments(),
+      structureApi.rooms(),
     ]);
     layers.value = meta.layers;
     media.value = meta.media;
@@ -68,16 +72,47 @@ export const useMetaStore = defineStore('meta', () => {
     fieldLabels.value = meta.field_labels;
     buildings.value = structure.buildings;
     departments.value = depts.departments;
+    allRooms.value = rooms.rooms;
     loaded.value = true;
   }
 
   async function reloadStructure() {
-    const [structure, depts] = await Promise.all([
-      structureApi.buildings(), structureApi.departments(),
+    const [structure, depts, rooms] = await Promise.all([
+      structureApi.buildings(), structureApi.departments(), structureApi.rooms(),
     ]);
     buildings.value = structure.buildings;
     departments.value = depts.departments;
+    allRooms.value = rooms.rooms;
   }
+
+  /**
+   * Помещения, сгруппированные по корпусам и этажам.
+   * В таком виде их удобно показывать в выпадающих списках форм:
+   * плоский перечень из сотни кабинетов нечитаем.
+   */
+  const roomsByFloor = computed(() => {
+    const groups = [];
+    for (const room of allRooms.value) {
+      const key = room.building_id + ':' + room.floor_id;
+      let group = groups.find((g) => g.key === key);
+      if (!group) {
+        group = {
+          key,
+          building_id: room.building_id,
+          floor_id: room.floor_id,
+          label: `${room.building_name} · ${room.floor_number} этаж`,
+          rooms: [],
+        };
+        groups.push(group);
+      }
+      group.rooms.push(room);
+    }
+    for (const group of groups) {
+      group.rooms.sort((a, b) =>
+        String(a.room_number).localeCompare(String(b.room_number), 'ru', { numeric: true }));
+    }
+    return groups;
+  });
 
   // --- Производные справочники ---
 
@@ -135,9 +170,9 @@ export const useMetaStore = defineStore('meta', () => {
 
   return {
     layers, media, deviceTypes, deviceStatuses, portStatuses, fieldLabels,
-    buildings, departments, loaded,
+    buildings, departments, allRooms, loaded,
     load, reloadStructure,
-    floorsById, departmentsById, typesByLayer, typeList,
+    floorsById, departmentsById, typesByLayer, typeList, roomsByFloor,
     typeLabel, typeShort, layerOf, statusLabel, statusColor, layerColor,
     resolveMedium, canPlugIntoSocket, extraFields,
   };

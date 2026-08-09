@@ -43,7 +43,7 @@ router.get('/map', (req, res) => {
   `).all(floorId);
 
   const sockets = db.prepare(`
-    SELECT s.*, p.port_number, p.status AS port_status,
+    SELECT s.*, r.floor_id, p.port_number, p.status AS port_status,
            sw.name AS switch_name,
            (SELECT COUNT(*) FROM devices d WHERE d.uplink_socket_id = s.id) AS devices_count
     FROM sockets s
@@ -54,8 +54,13 @@ router.get('/map', (req, res) => {
   `).all(floorId);
 
   const devices = db.prepare(`
-    SELECT d.* FROM devices d JOIN rooms r ON r.id = d.room_id WHERE r.floor_id = ?
-  `).all(floorId).map((d) => model.serializeDevice(d));
+    SELECT d.*, r.floor_id FROM devices d JOIN rooms r ON r.id = d.room_id
+    WHERE r.floor_id = ?
+  `).all(floorId).map((d) => {
+    const out = model.serializeDevice(d);
+    out.floor_id = d.floor_id;
+    return out;
+  });
 
   res.json({ floor, rooms, sockets, devices });
 });
@@ -95,6 +100,58 @@ function num(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
+
+/**
+ * Содержимое всех этажей сразу - для режима «всё здание».
+ *
+ * Планы SVG сюда намеренно не включены: с вшитой растровой подложкой
+ * они весят мегабайты, и тянуть их все ради одного запроса расточительно.
+ * Клиент забирает их по мере надобности через /api/floors/:id/svg.
+ */
+router.get('/map/all', (req, res) => {
+  const floors = db.prepare(`
+    SELECT f.*, b.name AS building_name, b.short_name AS building_short,
+           b.sort_order AS building_order
+    FROM floors f JOIN buildings b ON b.id = f.building_id
+    ORDER BY b.sort_order, b.id, f.floor_number
+  `).all();
+
+  const rooms = db.prepare(`
+    SELECT r.*, d.name AS department_name, d.color AS department_color
+    FROM rooms r LEFT JOIN departments d ON d.id = r.department_id
+  `).all();
+
+  const sockets = db.prepare(`
+    SELECT s.*, r.floor_id, p.port_number, p.status AS port_status,
+           sw.name AS switch_name,
+           (SELECT COUNT(*) FROM devices d WHERE d.uplink_socket_id = s.id) AS devices_count
+    FROM sockets s
+    JOIN rooms r ON r.id = s.room_id
+    LEFT JOIN cisco_ports p     ON p.id = s.cisco_port_id
+    LEFT JOIN cisco_switches sw ON sw.id = p.switch_id
+  `).all();
+
+  const devices = db.prepare(`
+    SELECT d.*, r.floor_id FROM devices d JOIN rooms r ON r.id = d.room_id
+  `).all().map((d) => {
+    const out = model.serializeDevice(d);
+    out.floor_id = d.floor_id;
+    return out;
+  });
+
+  res.json({ floors, rooms, sockets, devices });
+});
+
+/**
+ * Оборудование вне помещений: склад, заказанное, запланированное.
+ * Показывается отдельной полосой сбоку от карты, откуда его можно
+ * перетащить на план.
+ */
+router.get('/map/unplaced', (req, res) => {
+  const devices = db.prepare('SELECT * FROM devices WHERE room_id IS NULL ORDER BY status, type, id')
+    .all().map((d) => model.serializeDevice(d));
+  res.json({ devices });
+});
 
 // =====================================================================
 //  Глобальный поиск. Возвращает разнородные результаты сразу с

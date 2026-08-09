@@ -3,18 +3,36 @@ import { ref, computed, shallowRef } from 'vue';
 import { mapApi, structureApi, deviceApi, networkApi } from '../api.js';
 import { useMetaStore } from './core.js';
 
+// Отступы при раскладке этажей в общем виде, в единицах карты.
+// Заданы долями от размеров блока, чтобы не зависеть от масштаба планов.
+const GAP_BETWEEN_FLOORS = 0.18;
+const GAP_BETWEEN_BUILDINGS = 0.14;
+const LABEL_BAND = 0.09;
+
 export const useMapStore = defineStore('map', () => {
   const meta = useMetaStore();
 
-  // --- Данные текущего этажа ---
-  const floorId = ref(null);
+  // --- Режим отображения ---
+  // 'floor'    — один этаж, повседневная работа
+  // 'building' — все этажи всех корпусов, для переездов и обзора
+  const mode = ref('floor');
+
+  // --- Данные ---
+  const floorId = ref(null);      // выбранный этаж (в обоих режимах)
   const floor = ref(null);
+  const floorsMeta = ref([]);     // сведения об этажах для общего вида
   const rooms = ref([]);
   const sockets = ref([]);
   const devices = ref([]);
-  const svgText = shallowRef('');   // текст плана; реактивность по ссылке не нужна
+  const unplaced = ref([]);       // оборудование вне помещений
+  // Планы этажей: грузятся по мере надобности и остаются в памяти.
+  // С вшитой подложкой они весят мегабайты, тянуть их все сразу незачем.
+  const svgCache = shallowRef(new Map());
   const loading = ref(false);
   const error = ref(null);
+
+  /** План текущего этажа — для совместимости с одиночным режимом. */
+  const svgText = computed(() => svgCache.value.get(floorId.value) || '');
 
   // --- Состояние интерфейса ---
   const selection = ref(null);       // { kind, id }
@@ -28,10 +46,96 @@ export const useMapStore = defineStore('map', () => {
   const roomsById   = computed(() => new Map(rooms.value.map((r) => [r.id, r])));
   const socketsById = computed(() => new Map(sockets.value.map((s) => [s.id, s])));
   const devicesById = computed(() => new Map(devices.value.map((d) => [d.id, d])));
+  // Ключ включает этаж: в разных корпусах встречаются одинаковые
+  // номера, и в общем виде фигуры room-101 будут сразу с двух планов
   const roomsByPolygon = computed(() => {
     const map = new Map();
-    for (const r of rooms.value) if (r.svg_polygon_id) map.set(r.svg_polygon_id, r);
+    for (const r of rooms.value) {
+      if (r.svg_polygon_id) map.set(r.floor_id + ':' + r.svg_polygon_id, r);
+    }
     return map;
+  });
+
+  /**
+   * Блоки карты — прямоугольные области, каждая со своим планом этажа.
+   *
+   * В одиночном режиме блок один и лежит в начале координат; в общем
+   * виде этажи раскладываются столбцами по корпусам, снизу вверх по
+   * номеру. Всё остальное приложение работает с блоками одинаково, и
+   * поэтому логика отрисовки и перетаскивания у режимов общая.
+   */
+  const blocks = computed(() => {
+    const list = mode.value === 'building'
+      ? floorsMeta.value
+      : (floor.value ? [floor.value] : []);
+    if (!list.length) return [];
+
+    const sized = list.map((f) => ({
+      floorId: f.id,
+      floor: f,
+      label: `${f.building_short || f.building_name} · ${f.floor_number} этаж`,
+      title: `${f.building_name}, ${f.floor_number} этаж`,
+      buildingId: f.building_id,
+      floorNumber: f.floor_number,
+      w: Number(f.svg_width) || 4000,
+      h: Number(f.svg_height) || 1400,
+      hasPlan: !!f.svg_file,
+    }));
+
+    if (mode.value === 'floor') {
+      return sized.map((b) => ({ ...b, x: 0, y: 0 }));
+    }
+
+    // Группировка по корпусам с сохранением порядка
+    const columns = [];
+    for (const block of sized) {
+      let column = columns.find((c) => c.buildingId === block.buildingId);
+      if (!column) { column = { buildingId: block.buildingId, blocks: [] }; columns.push(column); }
+      column.blocks.push(block);
+    }
+    // Верхний этаж — сверху, как на разрезе здания
+    for (const column of columns) column.blocks.sort((a, b) => b.floorNumber - a.floorNumber);
+
+    const maxH = Math.max(...sized.map((b) => b.h), 1);
+    const gapY = maxH * GAP_BETWEEN_FLOORS;
+    const band = maxH * LABEL_BAND;
+
+    const out = [];
+    let cursorX = 0;
+    for (const column of columns) {
+      const columnW = Math.max(...column.blocks.map((b) => b.w), 1);
+      let cursorY = 0;
+      for (const block of column.blocks) {
+        out.push({
+          ...block,
+          // Блоки выравниваются по левому краю столбца
+          x: cursorX,
+          y: cursorY + band,
+          columnW,
+          labelY: cursorY + band * 0.55,
+        });
+        cursorY += band + block.h + gapY;
+      }
+      cursorX += columnW + columnW * GAP_BETWEEN_BUILDINGS;
+    }
+    return out;
+  });
+
+  const blockByFloor = computed(() => new Map(blocks.value.map((b) => [b.floorId, b])));
+
+  /** Смещение блока этажа в общей системе координат холста. */
+  function offsetOf(id) {
+    const block = blockByFloor.value.get(Number(id));
+    return block ? { x: block.x, y: block.y } : { x: 0, y: 0 };
+  }
+
+  /** Габариты всей сцены — для вписывания в окно. */
+  const sceneBounds = computed(() => {
+    if (!blocks.value.length) return { x: 0, y: 0, w: 1000, h: 700 };
+    const right = Math.max(...blocks.value.map((b) => b.x + b.w));
+    const bottom = Math.max(...blocks.value.map((b) => b.y + b.h));
+    const top = Math.min(...blocks.value.map((b) => b.labelY ?? b.y));
+    return { x: 0, y: Math.min(top, 0), w: right, h: bottom - Math.min(top, 0) };
   });
 
   function layerVisible(key) { return !hiddenLayers.value.has(key); }
@@ -84,8 +188,11 @@ export const useMapStore = defineStore('map', () => {
 
       out.push({
         id: `${uplink.kind}-${uplink.id}-${device.id}`,
-        x1: device.pos_x, y1: device.pos_y,
-        x2: target.pos_x, y2: target.pos_y,
+        // Координаты локальные, в системе своего этажа. Смещение блока
+        // добавляет холст: в общем виде концы связи могут оказаться
+        // на разных этажах.
+        x1: device.pos_x, y1: device.pos_y, floor1: device.floor_id,
+        x2: target.pos_x, y2: target.pos_y, floor2: target.floor_id,
         medium: uplink.medium || 'ethernet',
         from: device.id,
         to: `${uplink.kind}:${uplink.id}`,
@@ -110,25 +217,32 @@ export const useMapStore = defineStore('map', () => {
 
   // --- Загрузка ---
 
+  /** Подгружает план этажа, если его ещё нет в памяти. */
+  async function ensureSvg(id) {
+    if (svgCache.value.has(id)) return;
+    let text = '';
+    try {
+      const response = await fetch(structureApi.floorSvgUrl(id), { credentials: 'same-origin' });
+      if (response.ok) text = await response.text();
+    } catch { /* плана нет или он недоступен - покажем пустой блок */ }
+    const next = new Map(svgCache.value);
+    next.set(id, text);
+    svgCache.value = next;
+  }
+
   async function loadFloor(id, { keepSelection = false } = {}) {
     if (id == null) return;
     loading.value = true;
     error.value = null;
     try {
-      const needSvg = String(id) !== String(floorId.value) || !svgText.value;
       floorId.value = Number(id);
+      mode.value = 'floor';
       const data = await mapApi.floor(id);
       floor.value = data.floor;
       rooms.value = data.rooms;
       sockets.value = data.sockets;
       devices.value = data.devices;
-
-      if (needSvg) {
-        svgText.value = data.floor.svg_file
-          ? await fetch(structureApi.floorSvgUrl(id), { credentials: 'same-origin' })
-              .then((r) => (r.ok ? r.text() : ''))
-          : '';
-      }
+      if (data.floor.svg_file) await ensureSvg(Number(id));
       if (!keepSelection) selection.value = null;
     } catch (err) {
       error.value = err.message;
@@ -138,13 +252,74 @@ export const useMapStore = defineStore('map', () => {
     }
   }
 
-  /** Перечитывает данные этажа, не трогая план и выделение. */
+  /**
+   * Общий вид: все этажи всех корпусов на одном холсте.
+   *
+   * Планы подгружаются здесь же, параллельно. Это единственное место,
+   * где приложение может задуматься на секунду-другую, поэтому режим
+   * включается вручную, а не по умолчанию.
+   */
+  async function loadBuildingView() {
+    loading.value = true;
+    error.value = null;
+    try {
+      const data = await mapApi.allFloors();
+      floorsMeta.value = data.floors;
+      rooms.value = data.rooms;
+      sockets.value = data.sockets;
+      devices.value = data.devices;
+      mode.value = 'building';
+
+      await Promise.all(
+        data.floors.filter((f) => f.svg_file).map((f) => ensureSvg(f.id))
+      );
+      if (floorId.value) {
+        floor.value = data.floors.find((f) => f.id === floorId.value) || floor.value;
+      }
+    } catch (err) {
+      error.value = err.message;
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  /** Переключение режима с сохранением выделения. */
+  async function setMode(next) {
+    if (next === mode.value) return;
+    if (next === 'building') await loadBuildingView();
+    else await loadFloor(floorId.value || floorsMeta.value[0]?.id, { keepSelection: true });
+  }
+
+  /** Перечитывает данные, не трогая планы и выделение. */
   async function refresh() {
-    if (floorId.value == null) return;
-    const data = await mapApi.floor(floorId.value);
-    rooms.value = data.rooms;
-    sockets.value = data.sockets;
-    devices.value = data.devices;
+    if (mode.value === 'building') {
+      const data = await mapApi.allFloors();
+      floorsMeta.value = data.floors;
+      rooms.value = data.rooms;
+      sockets.value = data.sockets;
+      devices.value = data.devices;
+    } else if (floorId.value != null) {
+      const data = await mapApi.floor(floorId.value);
+      rooms.value = data.rooms;
+      sockets.value = data.sockets;
+      devices.value = data.devices;
+    }
+    await refreshUnplaced();
+  }
+
+  /** Оборудование вне помещений - для боковой полосы. */
+  async function refreshUnplaced() {
+    try {
+      unplaced.value = (await mapApi.unplaced()).devices;
+    } catch { /* полоса просто останется пустой */ }
+  }
+
+  /** Сбрасывает план из памяти - после загрузки нового файла. */
+  function dropSvg(id) {
+    const next = new Map(svgCache.value);
+    next.delete(Number(id));
+    svgCache.value = next;
   }
 
   // --- Выделение ---
@@ -273,12 +448,14 @@ export const useMapStore = defineStore('map', () => {
   });
 
   return {
-    floorId, floor, rooms, sockets, devices, svgText, loading, error,
+    mode, floorId, floor, floorsMeta, rooms, sockets, devices, unplaced,
+    svgText, svgCache, loading, error,
+    blocks, blockByFloor, offsetOf, sceneBounds,
     selection, highlightId, hiddenLayers, showLabels, showLinks, showInspector,
     roomsById, socketsById, devicesById, roomsByPolygon,
     visibleSockets, visibleDevices, links, highlightedLinks,
     layerVisible, toggleLayer, showAllLayers,
-    loadFloor, refresh,
+    loadFloor, loadBuildingView, setMode, refresh, refreshUnplaced, ensureSvg, dropSvg,
     select, clearSelection, flash,
     selectedRoom, selectedDevice, selectedSocket, roomContents,
     moveDevice, moveSocket, connectDevice, removeDevice,

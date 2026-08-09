@@ -311,6 +311,28 @@ function validateConnection(childId, target, options = {}) {
   return { ok: false, message: 'Неизвестный тип подключения' };
 }
 
+/**
+ * Где физически находится точка подключения устройства.
+ * Нужно, чтобы понять, не потеряла ли связь смысл после переезда.
+ */
+function uplinkTargetPlace(row) {
+  if (row.uplink_socket_id) {
+    const sock = db.prepare(`
+      SELECT s.label, s.room_id, r.floor_id
+      FROM sockets s JOIN rooms r ON r.id = s.room_id WHERE s.id = ?
+    `).get(row.uplink_socket_id);
+    return sock ? { kind: 'socket', ...sock } : null;
+  }
+  if (row.uplink_device_id) {
+    const parent = db.prepare(`
+      SELECT d.room_id, d.type, d.name, d.model, d.manufacturer, r.floor_id
+      FROM devices d LEFT JOIN rooms r ON r.id = d.room_id WHERE d.id = ?
+    `).get(row.uplink_device_id);
+    return parent ? { kind: 'device', ...parent, label: deviceTitle(parent) } : null;
+  }
+  return null;
+}
+
 /** Раскладывает объект uplink обратно по колонкам таблицы. */
 function uplinkColumns(target, medium) {
   if (!target || target.kind === 'none') {
@@ -342,5 +364,5 @@ function syncPortStatus(target) {
 module.exports = {
   serializeDevice, getDevice, DEVICE_SELECT, deviceTitle,
   placeChain, socketChain, buildChain, childrenOf,
-  validateConnection, validateTypeChange, uplinkColumns, wouldCreateCycle, portUsage, syncPortStatus,
+  validateConnection, validateTypeChange, uplinkColumns, uplinkTargetPlace, wouldCreateCycle, portUsage, syncPortStatus,
 };

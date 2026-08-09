@@ -84,12 +84,20 @@ export const DeviceForm = {
         <div class="grid-2">
           <div class="field">
             <label class="eyebrow">Помещение</label>
+            <!-- Список охватывает все корпуса: оборудование переезжает
+                 между отделениями и зданиями, и учёт должен это позволять -->
             <select class="select" v-model.number="form.room_id">
               <option :value="null">— вне помещений (склад) —</option>
-              <option v-for="room in roomOptions" :key="room.id" :value="room.id">
-                {{ room.room_number }} — {{ roomTitle(room) }}
-              </option>
+              <optgroup v-for="group in meta.roomsByFloor" :key="group.key" :label="group.label">
+                <option v-for="room in group.rooms" :key="room.id" :value="room.id">
+                  {{ room.room_number }} — {{ roomTitle(room) }}
+                </option>
+              </optgroup>
             </select>
+            <p v-if="movingAway" class="note note--warn" style="margin-top:6px">
+              Устройство переезжает на другой этаж. Подключение будет
+              разорвано, а положение на плане назначится заново.
+            </p>
           </div>
           <div class="field">
             <label class="eyebrow">Ответственный</label>
@@ -142,8 +150,9 @@ export const DeviceForm = {
           </div>
           <p v-if="!socketOptions.length && !parentOptions.length && form.room_id"
              style="margin:5px 0 0;font-size:12px;color:var(--muted)">
-            В этом кабинете нет ни свободных розеток, ни оборудования,
-            к которому можно подключиться.
+            {{ movingAway
+              ? 'Подключение на новом месте настроите, открыв соответствующий этаж.'
+              : 'В этом кабинете нет ни свободных розеток, ни оборудования, к которому можно подключиться.' }}
           </p>
         </div>
 
@@ -269,6 +278,7 @@ export const DeviceForm = {
         const data = await deviceApi.card(props.deviceId);
         const d = data.device;
         form.value = { ...blank(), ...d };
+        originalFloor.value = floorOf(d.room_id);
         uplinkKey.value = d.uplink.kind === 'none' ? 'none' : d.uplink.kind + ':' + d.uplink.id;
         uplinkMedium.value = d.uplink.medium || null;
       } catch (err) {
@@ -288,6 +298,16 @@ export const DeviceForm = {
         : !!meta.resolveMedium(form.value.type, store.devicesById.get(Number(id))?.type);
       if (!still) uplinkKey.value = 'none';
     });
+
+    /** Этаж выбранного помещения - для предупреждения о переезде. */
+    const floorOf = (roomId) =>
+      meta.allRooms.find((r) => r.id === Number(roomId))?.floor_id ?? null;
+
+    const originalFloor = ref(null);
+    const movingAway = computed(() =>
+      originalFloor.value !== null && form.value.room_id
+        && floorOf(form.value.room_id) !== originalFloor.value
+    );
 
     watch(() => form.value.room_id, (next, prev) => {
       if (prev !== undefined && next !== prev) uplinkKey.value = 'none';
@@ -313,6 +333,11 @@ export const DeviceForm = {
           : await deviceApi.create(payload);
 
         toasts.ok(props.deviceId ? 'Карточка сохранена' : 'Оборудование добавлено');
+        // Сервер мог разорвать связь, потерявшую смысл после переезда,
+        // либо отказать в подключении при создании - в обоих случаях
+        // человек должен об этом узнать, а не обнаружить потом
+        if (result.detached) toasts.info('Подключение снято: ' + result.detached);
+        if (result.connection_rejected) toasts.error(result.connection_rejected);
         emit('saved', result.device);
       } catch (err) {
         toasts.error(err.message);
@@ -339,7 +364,7 @@ export const DeviceForm = {
     return {
       meta, form, loading, saving, uplinkKey, uplinkMedium, mediumOptions,
       roomOptions, extraFields, socketOptions, parentOptions,
-      knownManufacturers, knownPersons, roomTitle,
+      knownManufacturers, knownPersons, roomTitle, movingAway,
       normalizeMac, save, remove,
     };
   },

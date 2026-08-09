@@ -187,6 +187,19 @@ a { color: var(--accent); }
 }
 .topbar__spacer { flex: 1; }
 
+/* Переключатель режима карты */
+.mode-switch {
+  display: inline-flex; border: 1px solid var(--line);
+  border-radius: var(--radius); overflow: hidden; flex: none;
+}
+.mode-switch button {
+  padding: 5px 11px; border: 0; background: var(--bg-0);
+  color: var(--muted); cursor: pointer; font-size: 12.5px; white-space: nowrap;
+}
+.mode-switch button:hover { color: var(--text-dim); background: var(--bg-2); }
+.mode-switch button.is-active { background: var(--accent-dim); color: #eafcfc; }
+.mode-switch button + button { border-left: 1px solid var(--line); }
+
 .workspace { position: relative; min-height: 0; min-width: 0; overflow: hidden; }
 
 /* =====================================================================
@@ -354,12 +367,38 @@ a { color: var(--accent); }
 }
 .room-label--sub { font-weight: 400; fill: #6c7c86; opacity: 0.75; }
 
+/* Рамки и подписи этажей в общем виде */
+.block-frame {
+  fill: none; stroke: #38444e; stroke-width: 1.5;
+  vector-effect: non-scaling-stroke; stroke-dasharray: 6 5;
+}
+.block-label {
+  font-family: var(--mono); font-weight: 600;
+  fill: #93a5b1; letter-spacing: 0.06em;
+  dominant-baseline: alphabetic;
+}
+.block-label--empty {
+  fill: #5d6c77; font-weight: 400; text-anchor: middle;
+}
+
+/* Подсказка с адресом цели во время перетаскивания */
+.hovercard--drag {
+  border-color: var(--accent-dim);
+  background: var(--bg-2);
+}
+.hovercard--drag.is-forbidden {
+  border-color: #5b302c; background: #2a1a19; color: #f0a49e;
+}
+
 /* Линии связи между устройствами */
 .link { fill: none; stroke-linecap: round; pointer-events: none; }
 .link--ethernet { stroke: #4b6b7a; stroke-width: 4; }
 .link--usb      { stroke: #8a6ea8; stroke-width: 3.5; stroke-dasharray: 12 9; }
 .link--wifi     { stroke: #3f8fa8; stroke-width: 3.5; stroke-dasharray: 3 11; }
 .link.is-highlight { stroke: var(--accent); stroke-width: 6; }
+/* Стояк между этажами: виден, но не спорит с содержимым этажа */
+.link--interfloor { opacity: 0.3; stroke-dasharray: 26 18; }
+.link--interfloor.is-highlight { opacity: 1; }
 
 /* Иконки на карте */
 .node { cursor: pointer; }
@@ -452,6 +491,69 @@ a { color: var(--accent); }
 }
 .hovercard__title { font-family: var(--mono); font-weight: 600; }
 .hovercard__meta { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+
+/* =====================================================================
+   Полоса «Не размещено»
+   ===================================================================== */
+.tray {
+  width: 236px; flex: none;
+  background: var(--bg-1);
+  border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0;
+  transition: width 0.14s;
+}
+.tray.is-collapsed { width: 40px; }
+
+.tray__toggle {
+  display: flex; align-items: center; gap: 7px;
+  padding: 10px 11px; width: 100%;
+  background: none; border: 0; border-bottom: 1px solid var(--line);
+  color: var(--muted); cursor: pointer;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em;
+  text-transform: uppercase; font-weight: 600;
+}
+.tray__toggle:hover { color: var(--text-dim); background: var(--bg-2); }
+.tray.is-collapsed .tray__toggle { flex-direction: column; padding: 10px 6px; }
+.tray__toggle-text { flex: 1; text-align: left; }
+.tray__count {
+  font-size: 10px; padding: 1px 5px; border-radius: 8px;
+  background: var(--accent-dim); color: #eafcfc;
+}
+.tray__count.is-zero { background: var(--bg-3); color: var(--muted); }
+
+.tray__body { flex: 1; overflow-y: auto; padding: 10px; min-height: 0; }
+.tray__empty { color: var(--muted); font-size: 12px; margin: 6px 0; }
+.tray__group { margin-bottom: 14px; }
+.tray__group .eyebrow { display: block; margin-bottom: 5px; }
+
+.tray__item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 7px; margin-bottom: 4px;
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: var(--radius);
+  cursor: grab; user-select: none;
+}
+.tray__item:hover { border-color: var(--accent-dim); background: var(--bg-3); }
+.tray__item:active { cursor: grabbing; }
+.tray__item-body { min-width: 0; }
+.tray__item-title {
+  font-size: 12.5px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.tray__item-sub { font-size: 11px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.tray__foot { padding: 10px; border-top: 1px solid var(--line); }
+.tray__hint { margin: 8px 0 0; font-size: 11px; color: var(--muted); line-height: 1.35; }
+
+/* Призрак перетаскиваемой из полосы иконки */
+.tray-ghost {
+  position: fixed; z-index: 300; pointer-events: none;
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 9px; border-radius: var(--radius);
+  background: var(--bg-3); border: 1px solid var(--accent);
+  font-size: 12.5px; box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+}
 
 /* =====================================================================
    Боковая панель осмотра

@@ -1,6 +1,6 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { useAuthStore, useMetaStore } from './stores/core.js';
+import { useAuthStore, useMetaStore, useToastStore } from './stores/core.js';
 import { useMapStore } from './stores/map.js';
 import SearchBox from './components/SearchBox.js';
 import { Toasts } from './components/ui.js';
@@ -54,16 +54,32 @@ export const App = {
 
           <!-- Выбор корпуса и этажа: только на карте -->
           <template v-if="isMapRoute">
-            <select class="select" style="width:auto;min-width:150px"
-                    v-model.number="currentBuildingId">
-              <option v-for="b in meta.buildings" :key="b.id" :value="b.id">{{ b.name }}</option>
-            </select>
-            <select class="select" style="width:auto;min-width:120px"
-                    v-model.number="currentFloorId">
-              <option v-for="f in currentFloors" :key="f.id" :value="f.id">
-                {{ f.floor_number }} этаж
-              </option>
-            </select>
+            <!-- Режим отображения. Повседневная работа идёт по одному
+                 этажу; общий вид нужен при переездах между корпусами,
+                 и он тяжелее - планы всех этажей грузятся сразу. -->
+            <div class="mode-switch">
+              <button type="button" :class="{ 'is-active': mapStore.mode === 'floor' }"
+                      @click="setMode('floor')">Этаж</button>
+              <button type="button" :class="{ 'is-active': mapStore.mode === 'building' }"
+                      @click="setMode('building')">Всё здание</button>
+            </div>
+
+            <template v-if="mapStore.mode === 'floor'">
+              <select class="select" style="width:auto;min-width:150px"
+                      v-model.number="currentBuildingId">
+                <option v-for="b in meta.buildings" :key="b.id" :value="b.id">{{ b.name }}</option>
+              </select>
+              <select class="select" style="width:auto;min-width:120px"
+                      v-model.number="currentFloorId">
+                <option v-for="f in currentFloors" :key="f.id" :value="f.id">
+                  {{ f.floor_number }} этаж
+                </option>
+              </select>
+            </template>
+            <span v-else class="pager__info">
+              этажей на холсте: {{ mapStore.blocks.length }}
+            </span>
+
             <span v-if="mapStore.loading" class="pager__info">загрузка…</span>
           </template>
 
@@ -84,6 +100,7 @@ export const App = {
     const auth = useAuthStore();
     const meta = useMetaStore();
     const mapStore = useMapStore();
+    const toasts = useToastStore();
     const route = useRoute();
     const router = useRouter();
     const searchRef = ref(null);
@@ -97,6 +114,15 @@ export const App = {
 
     function isActive(path) { return route.path.startsWith(path); }
     function go(path) { if (!isActive(path)) router.push(path); }
+
+    /** Переключение режима карты с показом ошибки, если планы не встали. */
+    async function setMode(next) {
+      try {
+        await mapStore.setMode(next);
+      } catch (err) {
+        toasts.error('Не удалось переключить режим: ' + err.message);
+      }
+    }
 
     async function logout() {
       await auth.logout();
@@ -166,7 +192,7 @@ export const App = {
     return {
       auth, meta, mapStore, nav: NAV, searchRef,
       isLoginRoute, isMapRoute, pageTitle,
-      isActive, go, logout,
+      isActive, go, logout, setMode,
       currentBuildingId, currentFloors, currentFloorId, onSearchGo,
     };
   },

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { db, logChange, SVG_DIR } = require('../db');
 const { pick, update, insert, notFound } = require('../crud');
+const { parseRoomId, buildRoomId, checkPlacement } = require('../roomid');
 
 const router = express.Router();
 
@@ -134,17 +135,27 @@ router.put('/floors/:id/svg', (req, res) => {
     .run(fileName, width || null, height || null, floor.id);
 
   const report = autoBind(floor.id, ids);
+  // Если в идентификаторах указаны корпус и этаж, сверяем их с тем,
+  // куда файл загружают: так ловится копия чужого плана
+  const warning = checkPlacement(ids, floor.building_id, floor.floor_number);
+
   logChange(req, 'floor', floor.id, 'update',
     `загружен план, привязано помещений: ${report.bound.length}`);
-  res.json({ ok: true, ...report });
+  res.json({ ok: true, warning, ...report });
 });
 
-/** Вытаскивает id вида room-XXX из текста SVG. */
+/**
+ * Вытаскивает идентификаторы помещений из текста SVG.
+ * Берём все id подряд и отсеиваем те, что не похожи на помещение, -
+ * так поддерживаются обе формы записи разом.
+ */
 function extractRoomIds(svg) {
   const found = new Set();
-  const re = /\bid\s*=\s*["'](room-[^"']+)["']/g;
+  const re = /\bid\s*=\s*["']([^"']+)["']/g;
   let m;
-  while ((m = re.exec(svg)) !== null) found.add(m[1]);
+  while ((m = re.exec(svg)) !== null) {
+    if (parseRoomId(m[1])) found.add(m[1]);
+  }
   return [...found];
 }
 
@@ -165,7 +176,7 @@ function autoBind(floorId, svgIds) {
 
   db.transaction(() => {
     for (const svgId of svgIds) {
-      const key = svgId.replace(/^room-/, '').trim().toLowerCase();
+      const key = String(parseRoomId(svgId)?.number || '').trim().toLowerCase();
       const room = byNumber.get(key);
       if (room) {
         clearOthers.run(floorId, svgId, room.id);
@@ -199,10 +210,14 @@ router.get('/floors/:id/bindings', (req, res) => {
   const usedIds = new Set(rooms.map((r) => r.svg_polygon_id).filter(Boolean));
 
   res.json({
+    // Готовый образец идентификатора для этого этажа: чтобы при
+    // обводке плана не вспоминать порядок частей
+    id_hint: buildRoomId(floor.building_id, floor.floor_number, '214'),
+    id_hint_corridor: buildRoomId(floor.building_id, floor.floor_number, 'kor-1'),
     total_in_svg: ids.length,
     bound: rooms.filter((r) => r.svg_polygon_id),
     unmatched: ids.filter((i) => !usedIds.has(i))
-      .map((i) => ({ svg_polygon_id: i, suggested_number: i.replace(/^room-/, '') })),
+      .map((i) => ({ svg_polygon_id: i, suggested_number: parseRoomId(i)?.number || i })),
     missing: rooms.filter((r) => !r.svg_polygon_id),
   });
 });

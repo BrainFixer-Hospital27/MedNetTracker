@@ -3,18 +3,30 @@ import { useRoute, useRouter } from 'vue-router';
 import { useMapStore } from '../stores/map.js';
 import { useMetaStore, useToastStore } from '../stores/core.js';
 import MapCanvas from '../components/MapCanvas.js';
+import UnplacedTray from '../components/UnplacedTray.js';
 import Inspector from '../components/Inspector.js';
 import ConnectDialog from '../components/ConnectDialog.js';
 import { DeviceForm, SocketForm, RoomForm } from '../components/forms.js';
 import { Modal } from '../components/ui.js';
 import { Icon } from '../components/icons.js';
 import { deviceTitle, roomTitle } from '../labels.js';
+import { deviceApi } from '../api.js';
 
 export const MapView = {
-  components: { MapCanvas, Inspector, ConnectDialog, DeviceForm, SocketForm, RoomForm, Modal, Icon },
+  components: { MapCanvas, UnplacedTray, Inspector, ConnectDialog, DeviceForm, SocketForm, RoomForm, Modal, Icon },
 
   template: `
     <div class="map" :class="{ 'is-panel-hidden': !store.showInspector }">
+      <UnplacedTray @drag-start="startTrayDrag"
+                    @edit="openDeviceForm"
+                    @add="openNewDevice(null)" />
+
+      <!-- Призрак перетаскиваемой из полосы иконки -->
+      <div v-if="trayDrag" class="tray-ghost"
+           :style="{ left: trayDrag.x + 14 + 'px', top: trayDrag.y + 16 + 'px' }">
+        {{ trayDrag.title }}
+      </div>
+
       <MapCanvas ref="canvasRef"
                  @connect-request="onConnectRequest"
                  @after-move="onAfterMove"
@@ -139,6 +151,55 @@ export const MapView = {
     const roomForm = ref({ open: false, id: null });
     const connectRequest = ref(null);
     const relocation = ref(null);
+    const trayDrag = ref(null);
+
+    // =================================================================
+    //  Перетаскивание из полосы «Не размещено»
+    //
+    //  Полоса живёт вне холста, поэтому событиями указателя занимается
+    //  этот экран, а холст только отвечает на вопрос «что под курсором».
+    // =================================================================
+    function startTrayDrag(event, device) {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      trayDrag.value = {
+        id: device.id, title: deviceTitle(device),
+        x: event.clientX, y: event.clientY,
+      };
+      window.addEventListener('pointermove', onTrayMove);
+      window.addEventListener('pointerup', onTrayDrop, { once: true });
+    }
+
+    function onTrayMove(event) {
+      if (!trayDrag.value) return;
+      trayDrag.value = { ...trayDrag.value, x: event.clientX, y: event.clientY };
+    }
+
+    async function onTrayDrop(event) {
+      window.removeEventListener('pointermove', onTrayMove);
+      const state = trayDrag.value;
+      trayDrag.value = null;
+      if (!state) return;
+
+      const target = canvasRef.value?.resolveDrop(event.clientX, event.clientY);
+      if (!target) {
+        toasts.error('Отпустите иконку внутри помещения на плане');
+        return;
+      }
+
+      try {
+        await deviceApi.update(state.id, {
+          room_id: target.roomId, pos_x: target.pos_x, pos_y: target.pos_y,
+        });
+        const room = store.roomsById.get(target.roomId);
+        toasts.ok(`Размещено: ${roomTitle(room)}`);
+        await store.refresh();
+        store.select('device', state.id);
+        store.flash('device', state.id);
+      } catch (err) {
+        toasts.error(err.message);
+      }
+    }
 
     // =================================================================
     //  Загрузка этажа по адресу
@@ -185,7 +246,7 @@ export const MapView = {
       nextTick(() => canvasRef.value?.focusOn(kind, Number(id)));
     }
 
-    onMounted(syncFromRoute);
+    onMounted(() => { syncFromRoute(); store.refreshUnplaced(); });
     watch(() => route.query, syncFromRoute);
 
     // =================================================================
@@ -216,6 +277,7 @@ export const MapView = {
     async function onDeviceSaved(device) {
       deviceForm.value = { open: false, id: null, roomId: null };
       await store.refresh();
+      await store.refreshUnplaced();
       if (device?.id) store.select('device', device.id);
     }
 
@@ -309,7 +371,8 @@ export const MapView = {
 
     return {
       store, canvasRef, selectionLabel,
-      deviceForm, socketForm, roomForm, connectRequest, relocation,
+      deviceForm, socketForm, roomForm, connectRequest, relocation, trayDrag,
+      startTrayDrag,
       openDeviceForm, openNewDevice, openSocketForm, openNewSocket, openRoomForm, onOpenDevice,
       onDeviceSaved, onDeviceDeleted, onSocketSaved, onSocketDeleted,
       onRoomSaved, onRoomDeleted,

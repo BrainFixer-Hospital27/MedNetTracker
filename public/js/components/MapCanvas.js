@@ -3,6 +3,7 @@ import { useMapStore } from '../stores/map.js';
 import { useMetaStore, useToastStore } from '../stores/core.js';
 import { DEVICE_GLYPHS } from './icons.js';
 import { roomTitle, deviceTitle, shorten } from '../labels.js';
+import { parseRoomId, findRoomShapes } from '../roomid.js';
 
 // =====================================================================
 //  Вспомогательные функции
@@ -33,16 +34,66 @@ const PAPER = '#e9eeeb';
  * снимает инлайновую заливку с фигур помещений (иначе она перебьёт
  * раскраску по отделениям) и проставляет им класс.
  */
-function normalizePlan(root) {
-  const shapes = root.querySelectorAll('[id^="room-"]');
+function normalizePlan(root, floorId) {
+  const shapes = findRoomShapes(root);
   for (const el of shapes) {
     el.classList.add('room');
     el.style.removeProperty('fill');
     el.style.removeProperty('fill-opacity');
     el.removeAttribute('fill');
     if (!el.getAttribute('stroke')) el.style.removeProperty('stroke');
+
+    el.dataset.polygonId = el.id;
+    el.dataset.floorId = String(floorId);
   }
+  namespaceIds(root, floorId);
   return shapes.length;
+}
+
+/**
+ * Разводит идентификаторы одного плана по своему пространству имён.
+ *
+ * В общем виде планы всех этажей оказываются в одном документе, а
+ * совпадают в них не только номера помещений: слои из редактора
+ * называются одинаково на каждом этаже (layer-base, layer-rooms), да и
+ * градиенты с масками обычно нумеруются с единицы. Дубликаты в одном
+ * документе - это сломанные ссылки: обращение к #gradient1 уведёт на
+ * чужой этаж.
+ *
+ * Поэтому переименовываем все идентификаторы и заодно правим ссылки
+ * на них внутри того же плана.
+ */
+function namespaceIds(root, floorId) {
+  const prefix = `f${floorId}--`;
+  const renamed = new Map();
+
+  for (const el of root.querySelectorAll('[id]')) {
+    const original = el.id;
+    if (!original || original.startsWith(prefix)) continue;
+    renamed.set(original, prefix + original);
+    el.id = prefix + original;
+  }
+  if (!renamed.size) return;
+
+  // Ссылки вида url(#name) в стилях и атрибутах заливки, обводки,
+  // масок, а также href="#name" у use и анимаций
+  const REF_ATTRS = ['fill', 'stroke', 'clip-path', 'mask', 'filter',
+    'marker-start', 'marker-mid', 'marker-end', 'style'];
+
+  for (const el of root.querySelectorAll('*')) {
+    for (const attr of REF_ATTRS) {
+      const value = el.getAttribute(attr);
+      if (!value || !value.includes('url(#')) continue;
+      el.setAttribute(attr, value.replace(/url\(#([^)]+)\)/g,
+        (match, name) => (renamed.has(name) ? `url(#${renamed.get(name)})` : match)));
+    }
+    for (const attr of ['href', 'xlink:href']) {
+      const value = el.getAttribute(attr);
+      if (!value || !value.startsWith('#')) continue;
+      const name = value.slice(1);
+      if (renamed.has(name)) el.setAttribute(attr, '#' + renamed.get(name));
+    }
+  }
 }
 
 export const MapCanvas = {
@@ -62,7 +113,14 @@ export const MapCanvas = {
 
       <svg ref="svgEl" class="map__svg" :viewBox="viewBox">
 
-        <!-- Подложка плана: сюда переносится содержимое файла этажа -->
+        <!-- Рамки этажей: в общем виде показывают границы каждого плана -->
+        <g v-if="store.mode === 'building'" class="blocks" pointer-events="none">
+          <rect v-for="b in store.blocks" :key="'bf' + b.floorId" class="block-frame"
+                :x="b.x - blockPad" :y="b.y - blockPad"
+                :width="b.w + blockPad * 2" :height="b.h + blockPad * 2" />
+        </g>
+
+        <!-- Подложка плана: сюда переносится содержимое файлов этажей -->
         <g ref="planEl" class="floorplan"></g>
 
         <!-- Подписи помещений -->
@@ -121,6 +179,19 @@ export const MapCanvas = {
                     :cx="nodeSize * 0.36" :cy="-nodeSize * 0.36" :r="nodeSize * 0.15" />
           </g>
         </g>
+        <!-- Названия этажей поверх всего: без них в общем виде
+             невозможно понять, куда смотришь -->
+        <g v-if="store.mode === 'building'" class="block-labels" pointer-events="none">
+          <template v-for="b in store.blocks" :key="'bl' + b.floorId">
+            <text class="block-label" :x="b.x" :y="b.labelY" :font-size="blockLabelSize">
+              {{ b.title }}
+            </text>
+            <text v-if="!b.hasPlan" class="block-label block-label--empty"
+                  :x="b.x + b.w / 2" :y="b.y + b.h / 2" :font-size="blockLabelSize">
+              план не загружен
+            </text>
+          </template>
+        </g>
       </svg>
 
       <!-- Всплывающая подсказка -->
@@ -128,6 +199,15 @@ export const MapCanvas = {
            :style="{ left: hover.left + 'px', top: hover.top + 'px' }">
         <div class="hovercard__title">{{ hover.title }}</div>
         <div v-if="hover.meta" class="hovercard__meta">{{ hover.meta }}</div>
+      </div>
+
+      <!-- Адрес цели во время перетаскивания. При переезде между
+           корпусами без него непонятно, куда именно опускаешь иконку. -->
+      <div v-if="dragTargetLabel" class="hovercard hovercard--drag"
+           :class="{ 'is-forbidden': dropForbidden }"
+           :style="{ left: dragTargetLabel.left + 'px', top: dragTargetLabel.top + 'px' }">
+        <div class="hovercard__title">{{ dragTargetLabel.title }}</div>
+        <div v-if="dragTargetLabel.meta" class="hovercard__meta">{{ dragTargetLabel.meta }}</div>
       </div>
 
       <!-- Слои. Панель сворачивается: иначе она перекрывает иконки
@@ -239,9 +319,15 @@ export const MapCanvas = {
 
     // --- Область просмотра (viewBox) ---
     const view = ref({ x: 0, y: 0, w: 1000, h: 700 });
-    const content = ref({ w: 1000, h: 700 });
     const canvasSize = ref({ w: 1000, h: 700 });
-    const hasPlan = ref(false);
+
+    // Габариты всей сцены считает хранилище: оно раскладывает блоки
+    const content = computed(() => store.sceneBounds);
+
+    /** Есть ли хоть один загруженный план — иначе показываем пояснение. */
+    const hasPlan = computed(() =>
+      store.blocks.some((b) => b.hasPlan && store.svgCache.get(b.floorId))
+    );
 
     const viewBox = computed(() =>
       [view.value.x, view.value.y, view.value.w, view.value.h].join(' ')
@@ -256,6 +342,9 @@ export const MapCanvas = {
     // этажа они превращаются в неразличимые точки.
     const nodeSize = computed(() => Math.max(unitsPerPixel.value * 26, 8));
     const socketSize = computed(() => Math.max(unitsPerPixel.value * 19, 6));
+    // Подписи этажей тоже держат постоянный экранный размер
+    const blockLabelSize = computed(() => unitsPerPixel.value * 15);
+    const blockPad = computed(() => unitsPerPixel.value * 6);
 
     // --- Геометрия помещений, снятая с плана ---
     const roomBoxes = ref(new Map());   // svg_polygon_id -> {x,y,width,height}
@@ -263,47 +352,60 @@ export const MapCanvas = {
     // =================================================================
     //  Загрузка плана в холст
     // =================================================================
-    function mountPlan() {
+    function mountScene() {
       const host = planEl.value;
       if (!host) return;
       host.replaceChildren();
       roomBoxes.value = new Map();
-      hasPlan.value = false;
-      if (!store.svgText) return;
+      if (!store.blocks.length) return;
 
-      const doc = new DOMParser().parseFromString(store.svgText, 'image/svg+xml');
-      const root = doc.querySelector('svg');
-      if (!root || doc.querySelector('parsererror')) {
-        toasts.error('Не удалось разобрать файл плана этажа');
-        return;
+      for (const block of store.blocks) {
+        const text = store.svgCache.get(block.floorId);
+        if (!text) continue;
+
+        const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+        const root = doc.querySelector('svg');
+        if (!root || doc.querySelector('parsererror')) {
+          toasts.error(`Не удалось разобрать план: ${block.title}`);
+          continue;
+        }
+
+        normalizePlan(root, block.floorId);
+
+        // Каждый этаж живёт в собственной системе координат, а на общем
+        // холсте раздвигается смещением группы. Так координаты
+        // оборудования в базе остаются локальными и не зависят от того,
+        // в каком режиме их посмотрели.
+        const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        group.setAttribute('transform', `translate(${block.x} ${block.y})`);
+        group.dataset.floorId = String(block.floorId);
+        for (const node of Array.from(root.childNodes)) {
+          group.appendChild(document.importNode(node, true));
+        }
+        host.appendChild(group);
       }
-
-      normalizePlan(root);
-
-      const box = (root.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
-      content.value = box.length === 4
-        ? { w: box[2], h: box[3], x: box[0], y: box[1] }
-        : { w: Number(root.getAttribute('width')) || 1000,
-            h: Number(root.getAttribute('height')) || 700, x: 0, y: 0 };
-
-      for (const node of Array.from(root.childNodes)) {
-        host.appendChild(document.importNode(node, true));
-      }
-      hasPlan.value = true;
 
       measureRooms();
       paintRooms();
       fitToView();
     }
 
-    /** Снимает габариты каждой фигуры помещения - нужны для раскладки. */
+    /**
+     * Снимает габариты фигур помещений.
+     * Хранятся в локальных координатах своего этажа: так их можно
+     * использовать для раскладки независимо от режима отображения.
+     */
     function measureRooms() {
       const boxes = new Map();
-      for (const el of planEl.value.querySelectorAll('[id^="room-"]')) {
+      for (const el of planEl.value.querySelectorAll('.room')) {
+        const floorId = Number(el.dataset.floorId);
+        const polygonId = el.dataset.polygonId;
+        if (!polygonId) continue;
         try {
           const b = el.getBBox();
-          boxes.set(el.id, { x: b.x, y: b.y, width: b.width, height: b.height });
-        } catch { /* фигура без геометрии - пропускаем */ }
+          boxes.set(floorId + ':' + polygonId,
+            { x: b.x, y: b.y, width: b.width, height: b.height, floorId });
+        } catch { /* фигура без геометрии */ }
       }
       roomBoxes.value = boxes;
     }
@@ -312,7 +414,8 @@ export const MapCanvas = {
     function paintRooms() {
       if (!planEl.value) return;
       for (const el of planEl.value.querySelectorAll('.room')) {
-        const room = store.roomsByPolygon.get(el.id);
+        const key = el.dataset.floorId + ':' + el.dataset.polygonId;
+        const room = store.roomsByPolygon.get(key);
         const color = room?.department_color;
         el.style.fill = color ? mixHex(PAPER, color, 0.22) : '';
         el.classList.toggle('room--nodept', !!room && !color);
@@ -597,11 +700,15 @@ export const MapCanvas = {
       if (kind === 'device') emit('open-device', item.id, true);
 
       const point = clientToSvg(event.clientX, event.clientY);
+      const base = store.offsetOf(item.floor_id);
+      const startX = item.pos_x + base.x;
+      const startY = item.pos_y + base.y;
       drag.value = {
         kind, id: item.id,
-        x: item.pos_x, y: item.pos_y,
-        offsetX: point.x - item.pos_x,
-        offsetY: point.y - item.pos_y,
+        fromFloor: item.floor_id,
+        x: startX, y: startY,
+        offsetX: point.x - startX,
+        offsetY: point.y - startY,
         moved: false,
         dropTarget: null,
         pointerId: event.pointerId,
@@ -621,6 +728,10 @@ export const MapCanvas = {
       }
       state.x = nx;
       state.y = ny;
+
+      const rect = canvas.value?.getBoundingClientRect();
+      state.pointer = rect
+        ? { x: event.clientX - rect.left, y: event.clientY - rect.top } : null;
 
       // Что окажется под курсором, если сейчас отпустить
       state.dropTarget = findDropTarget(event.clientX, event.clientY, state);
@@ -647,7 +758,12 @@ export const MapCanvas = {
         const roomHit = el.closest?.('.room');
         if (roomHit) {
           const roomId = Number(roomHit.dataset.roomId || 0);
-          if (roomId) return { type: 'room', id: roomId, ok: true };
+          if (roomId) {
+            return {
+              type: 'room', id: roomId, ok: true,
+              floorId: Number(roomHit.dataset.floorId),
+            };
+          }
         }
       }
       return null;
@@ -711,15 +827,33 @@ export const MapCanvas = {
         return;
       }
 
-      const roomId = target?.type === 'room' ? target.id : item.room_id;
+      const roomId = target.id;
+      const targetFloor = target.floorId;
       const changedRoom = roomId !== item.room_id;
-      const payload = { pos_x: round(state.x), pos_y: round(state.y) };
+      const changedFloor = targetFloor !== item.floor_id;
+
+      // Розетка привинчена к стене: переносить её на другой этаж
+      // бессмысленно, это была бы уже другая розетка
+      if (state.kind === 'socket' && changedFloor) {
+        markRejected(state.kind, state.id);
+        toasts.error('Розетку нельзя перенести на другой этаж');
+        return;
+      }
+
+      // Обратный перевод: из координат холста в систему целевого этажа
+      const offset = store.offsetOf(targetFloor);
+      const payload = {
+        pos_x: round(state.x - offset.x),
+        pos_y: round(state.y - offset.y),
+      };
       if (changedRoom) payload.room_id = roomId;
 
       try {
         if (state.kind === 'device') {
           const updated = await store.moveDevice(state.id, payload);
-          if (changedRoom) emit('after-move', { device: updated, roomId });
+          if (changedRoom) {
+            emit('after-move', { device: updated, roomId, changedFloor });
+          }
         } else {
           await store.moveSocket(state.id, payload);
         }
@@ -731,17 +865,69 @@ export const MapCanvas = {
 
     const round = (v) => Math.round(v * 10) / 10;
 
+    /**
+     * Куда попадёт перетаскиваемая иконка, если отпустить сейчас.
+     * Показывается рядом с курсором: в общем виде корпус и этаж
+     * иначе не разобрать.
+     */
+    const dragTargetLabel = computed(() => {
+      const state = drag.value;
+      if (!state || !state.moved || !state.pointer) return null;
+      const target = state.dropTarget;
+      const base = { left: state.pointer.x + 16, top: state.pointer.y + 20 };
+
+      if (!target) {
+        return { ...base, title: 'Мимо помещений', meta: 'иконка вернётся на место' };
+      }
+      if (target.type === 'node') {
+        const name = target.kind === 'socket'
+          ? 'Розетка ' + (store.socketsById.get(target.id)?.label || '')
+          : deviceTitle(store.devicesById.get(target.id));
+        return {
+          ...base,
+          title: target.ok ? 'Подключить к: ' + name : name,
+          meta: target.ok ? placeOf(target.kind, target.id) : target.reason,
+        };
+      }
+      const room = store.roomsById.get(target.id);
+      if (!room) return null;
+      return { ...base, title: roomTitle(room), meta: placeOfRoom(room) };
+    });
+
+    /** Полный адрес помещения: корпус, этаж, кабинет. */
+    function placeOfRoom(room) {
+      const block = store.blockByFloor.get(room.floor_id);
+      const parts = [];
+      if (block) parts.push(block.title);
+      parts.push('каб. ' + room.room_number);
+      if (room.department_name) parts.push(room.department_name);
+      return parts.join(' · ');
+    }
+
+    function placeOf(kind, id) {
+      const item = kind === 'socket'
+        ? store.socketsById.get(id) : store.devicesById.get(id);
+      const room = item && store.roomsById.get(item.room_id);
+      return room ? placeOfRoom(room) : '';
+    }
+
     // =================================================================
     //  Отрисовка узлов
     // =================================================================
 
-    /** Положение узла с поправкой на активное перетаскивание. */
+    /**
+     * Положение узла на холсте.
+     * В базе координаты локальные, привязанные к плану своего этажа;
+     * здесь к ним добавляется смещение блока. Во время перетаскивания
+     * используется текущая точка курсора, уже в координатах холста.
+     */
     function nodePos(kind, item) {
       const state = drag.value;
       if (state && state.kind === kind && state.id === item.id) {
         return { x: state.x, y: state.y };
       }
-      return { x: item.pos_x, y: item.pos_y };
+      const offset = store.offsetOf(item.floor_id);
+      return { x: item.pos_x + offset.x, y: item.pos_y + offset.y };
     }
 
     const translate = (p) => 'translate(' + p.x + ' ' + p.y + ')';
@@ -751,21 +937,35 @@ export const MapCanvas = {
 
     const renderedLinks = computed(() => {
       const state = drag.value;
-      if (!state) return store.links;
-      // Пока иконку тащат, примыкающие связи тянутся за ней
       return store.links.map((link) => {
+        // Концы связи могут лежать на разных этажах: смещение у каждого своё
+        const o1 = store.offsetOf(link.floor1);
+        const o2 = store.offsetOf(link.floor2);
+        const out = {
+          ...link,
+          x1: link.x1 + o1.x, y1: link.y1 + o1.y,
+          x2: link.x2 + o2.x, y2: link.y2 + o2.y,
+        };
+        if (!state) return out;
+        // Пока иконку тащат, примыкающие связи тянутся за ней
         if (state.kind === 'device' && link.from === state.id) {
-          return { ...link, x1: state.x, y1: state.y };
+          return { ...out, x1: state.x, y1: state.y };
         }
-        const key = state.kind + ':' + state.id;
-        if (link.to === key) return { ...link, x2: state.x, y2: state.y };
-        return link;
+        if (link.to === state.kind + ':' + state.id) {
+          return { ...out, x2: state.x, y2: state.y };
+        }
+        return out;
       });
     });
 
     function linkClass(link) {
       return [
         'link--' + link.medium,
+        // Связь между этажами - это стояк. Она законна (тот же
+        // видеорегистратор внизу и PoE-коммутатор наверху), но тянется
+        // через весь холст, поэтому рисуется приглушённо: не мешает
+        // читать этаж и при этом видна.
+        link.floor1 !== link.floor2 ? 'link--interfloor' : '',
         store.highlightedLinks.has(link.id) ? 'is-highlight' : '',
       ];
     }
@@ -805,9 +1005,10 @@ export const MapCanvas = {
     const roomLabels = computed(() => {
       const out = [];
       const upp = unitsPerPixel.value;
-      for (const [polygonId, box] of roomBoxes.value) {
-        const room = store.roomsByPolygon.get(polygonId);
+      for (const [key, box] of roomBoxes.value) {
+        const room = store.roomsByPolygon.get(key);
         if (!room) continue;
+        const offset = store.offsetOf(box.floorId);
         const widthPx = box.width / upp;
         if (widthPx < 42) continue;
         const size = Math.min(box.height * 0.16, box.width * 0.22, upp * 11);
@@ -816,9 +1017,9 @@ export const MapCanvas = {
         // середина кабинета занята иконками оборудования.
         const inset = Math.min(box.width, box.height) * 0.05;
         out.push({
-          id: polygonId,
-          x: box.x + inset,
-          y: box.y + inset,
+          id: key,
+          x: box.x + offset.x + inset,
+          y: box.y + offset.y + inset,
           size,
           number: room.room_number,
           // Название отделения на плане не пишем: оно дублирует
@@ -841,7 +1042,7 @@ export const MapCanvas = {
 
       for (const room of store.rooms) {
         if (!room.svg_polygon_id) continue;
-        const box = roomBoxes.value.get(room.svg_polygon_id);
+        const box = roomBoxes.value.get(room.floor_id + ':' + room.svg_polygon_id);
         if (!box || !box.width) continue;
 
         const contents = store.roomContents(room.id);
@@ -907,16 +1108,16 @@ export const MapCanvas = {
       measureCanvas();
       observer = new ResizeObserver(() => syncViewToCanvas());
       observer.observe(canvas.value);
-      if (store.svgText) mountPlan();
+      mountScene();
       nextTick(() => autoPlace());
     });
 
     onBeforeUnmount(() => observer?.disconnect());
 
-    watch(() => store.svgText, () => {
-      mountPlan();
+    watch(() => [store.blocks, store.svgCache], () => {
+      mountScene();
       nextTick(() => autoPlace());
-    });
+    }, { deep: false });
 
     watch(() => store.rooms, () => {
       paintRooms();
@@ -925,19 +1126,52 @@ export const MapCanvas = {
 
     watch(() => [store.selection, store.highlightId], () => applyRoomState(), { deep: true });
 
+    /**
+     * Куда попадёт объект, брошенный на карту извне (из полосы
+     * «Не размещено»). Возвращает помещение и локальные координаты
+     * в системе его этажа либо null, если бросили мимо.
+     */
+    function resolveDrop(clientX, clientY) {
+      const stack = document.elementsFromPoint(clientX, clientY);
+      for (const el of stack) {
+        const roomHit = el.closest?.('.room');
+        if (!roomHit) continue;
+        const roomId = Number(roomHit.dataset.roomId || 0);
+        if (!roomId) continue;
+        const floorId = Number(roomHit.dataset.floorId);
+        const point = clientToSvg(clientX, clientY);
+        const offset = store.offsetOf(floorId);
+        return {
+          roomId, floorId,
+          pos_x: round(point.x - offset.x),
+          pos_y: round(point.y - offset.y),
+        };
+      }
+      return null;
+    }
+
     /** Центрирует карту на объекте - используется поиском. */
     function focusOn(kind, id) {
       let point = null;
       if (kind === 'device') {
         const d = store.devicesById.get(id);
-        if (d && d.pos_x != null) point = { x: d.pos_x, y: d.pos_y };
+        if (d && d.pos_x != null) {
+          const o = store.offsetOf(d.floor_id);
+          point = { x: d.pos_x + o.x, y: d.pos_y + o.y };
+        }
       } else if (kind === 'socket') {
         const s = store.socketsById.get(id);
-        if (s && s.pos_x != null) point = { x: s.pos_x, y: s.pos_y };
+        if (s && s.pos_x != null) {
+          const o = store.offsetOf(s.floor_id);
+          point = { x: s.pos_x + o.x, y: s.pos_y + o.y };
+        }
       } else if (kind === 'room') {
         const room = store.roomsById.get(id);
-        const box = room && roomBoxes.value.get(room.svg_polygon_id);
-        if (box) point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+        const box = room && roomBoxes.value.get(room.floor_id + ':' + room.svg_polygon_id);
+        if (box) {
+          const o = store.offsetOf(box.floorId);
+          point = { x: box.x + o.x + box.width / 2, y: box.y + o.y + box.height / 2 };
+        }
       }
       if (!point) return;
 
@@ -951,10 +1185,11 @@ export const MapCanvas = {
       canvas, svgEl, planEl,
       viewBox, hasPlan, panning, drag, hover, rejected, dropForbidden, dropAllowed,
       showLegend, showLayers, mediaLegend,
+      blockLabelSize, blockPad, dragTargetLabel,
       nodeSize, socketSize,
       placedDevices, placedSockets, renderedLinks, roomLabels,
       onBackgroundDown, onPointerMove, onPointerUp, onWheel, onNodeDown,
-      zoomBy, fitToView, focusOn, autoPlace,
+      zoomBy, fitToView, focusOn, autoPlace, resolveDrop,
       nodePos, translate, nodeClass, linkClass, glyphPath, glyphTransform, layerStroke,
     };
   },

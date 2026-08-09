@@ -52,6 +52,9 @@ function buildFilter(query) {
     where.push('d.uplink_socket_id IS NULL AND d.uplink_device_id IS NULL');
   }
   if (query.unplaced === 'yes') where.push('(d.pos_x IS NULL OR d.pos_y IS NULL)');
+  // Оборудование, не привязанное ни к какому помещению: склад,
+  // заказанное, запланированное
+  if (query.no_room === 'yes') where.push('d.room_id IS NULL');
 
   if (query.q) {
     const q = `%${String(query.q).trim().toLowerCase()}%`;
@@ -266,6 +269,49 @@ router.patch('/:id', (req, res) => {
     }
   }
 
+  // Смена помещения без явных координат.
+  //
+  // Координаты иконки отсчитываются от плана конкретного этажа, поэтому
+  // при переезде они теряют смысл: на другом этаже это будет случайная
+  // точка, а то и вовсе за пределами плана. Обнуляем - при следующем
+  // открытии карты приложение разместит устройство в новом кабинете
+  // автоматически. Перетаскивание мышью присылает координаты явно,
+  // поэтому под это правило не подпадает.
+  const roomChanged = data.room_id !== undefined
+    && Number(data.room_id) !== Number(row.room_id);
+
+  if (roomChanged && data.pos_x === undefined && data.pos_y === undefined) {
+    data.pos_x = null;
+    data.pos_y = null;
+  }
+
+  // Подключение, потерявшее смысл после переезда.
+  //
+  // Розетка привинчена к стене конкретного кабинета: если оборудование
+  // из него уехало, связь с ней - заведомо неверная запись. С другим
+  // устройством сложнее: кабель через стену в соседний кабинет
+  // встречается сплошь и рядом (тот же PoE-коммутатор в коридоре
+  // кормит камеры по кабинетам), а вот через этаж - почти наверняка
+  // ошибка. Поэтому рвём связь с розеткой при любой смене кабинета,
+  // а с устройством - только при переезде на другой этаж.
+  let detachedReason = null;
+  if (roomChanged && req.body.uplink === undefined) {
+    const target = model.uplinkTargetPlace(row);
+    const newFloor = data.room_id
+      ? db.prepare('SELECT floor_id FROM rooms WHERE id = ?').get(data.room_id)?.floor_id
+      : null;
+
+    if (target?.kind === 'socket' && Number(target.room_id) !== Number(data.room_id)) {
+      detachedReason = `розетка ${target.label} осталась в прежнем кабинете`;
+    } else if (target?.kind === 'device' && target.floor_id !== newFloor) {
+      detachedReason = `${target.label} находится на другом этаже`;
+    }
+
+    if (detachedReason) {
+      Object.assign(data, model.uplinkColumns({ kind: 'none' }, null));
+    }
+  }
+
   let medium;
   if (req.body.uplink !== undefined) {
     // Если тип меняется тем же запросом, связь проверяется уже по новому
@@ -295,7 +341,11 @@ router.patch('/:id', (req, res) => {
 
   const summary = describeChange(row, data);
   if (summary) logChange(req, 'device', row.id, 'update', summary);
-  res.json({ device: model.getDevice(row.id, true), chain: model.buildChain(row.id) });
+  res.json({
+    device: model.getDevice(row.id, true),
+    chain: model.buildChain(row.id),
+    detached: detachedReason,
+  });
 });
 
 /** Короткое человекочитаемое описание правки - для журнала. */
